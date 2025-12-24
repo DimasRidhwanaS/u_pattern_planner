@@ -30,10 +30,6 @@ class AreaHandler:
         boundary_points: List[Point2D],
         safety_margin: float,
     ):
-        if len(boundary_points) != 4:
-            raise ValueError(
-                f"AreaHandler requires exactly 4 points, got {len(boundary_points)}"
-            )
         
         self._raw_points = boundary_points
         self._safety_margin = safety_margin
@@ -46,44 +42,25 @@ class AreaHandler:
 
         self._process()
 
-    # -------------------------
-    # Public API
-    # -------------------------
-
-    def get_safe_polygon(self) -> Polygon:
-        return self._safe_polygon
-
-    def get_movement_axis(self) -> str:
-        """
-        Returns:
-            "horizontal" or "vertical"
-        """
-        return self._movement_axis
-
-    def get_coverage_axis(self) -> str:
-        """
-        Returns:
-            "horizontal" or "vertical"
-        """
-        return self._coverage_axis
-
-    # -------------------------
-    # Core pipeline
-    # -------------------------
-
     def _process(self):
         self._create_polygon()
         self._shrink_polygon()
         self._determine_movement_direction()
 
     # -------------------------
-    # Step 2: Polygon creation
+    # Main Process
     # -------------------------
 
-    def _create_polygon(self):
-        if len(self._raw_points) != 4:
-            raise ValueError("Exactly 4 points are required")
+    def _order_points_ccw(self, points: List[Point2D]) -> List[Point2D]:
+        cx = sum(p[0] for p in points) / len(points)
+        cy = sum(p[1] for p in points) / len(points)
 
+        def angle(p):
+            return math.atan2(p[1] - cy, p[0] - cx)
+
+        return sorted(points, key=angle)
+
+    def _create_polygon(self):
         ordered = self._order_points_ccw(self._raw_points)
 
         polygon = Polygon(ordered)
@@ -92,10 +69,7 @@ class AreaHandler:
             raise ValueError("Invalid polygon after ordering")
 
         self._raw_polygon = polygon
-    # -------------------------
-    # Step 3: Polygon shrinking
-    # -------------------------
-
+        
     def _shrink_polygon(self):
         """
         Shrinks polygon inward by safety margin.
@@ -114,9 +88,6 @@ class AreaHandler:
 
         self._safe_polygon = shrunk
 
-    # -------------------------
-    # Step 4: Direction decision
-    # -------------------------
     def _determine_movement_direction(self):
         """
         Determines movement direction:
@@ -165,36 +136,39 @@ class AreaHandler:
 
         self._movement_vector = (nx, ny)  # normalized perpendicular vector
 
-
-    def _order_points_ccw(self, points: List[Point2D]) -> List[Point2D]:
-        cx = sum(p[0] for p in points) / len(points)
-        cy = sum(p[1] for p in points) / len(points)
-
-        def angle(p):
-            return math.atan2(p[1] - cy, p[0] - cx)
-
-        return sorted(points, key=angle)
     # -------------------------
-    # Debug helpers (optional)
+    # Public API
     # -------------------------
 
-    def debug_summary(self) -> dict:
-        return {
-            "raw_area": self._raw_polygon.area if self._raw_polygon else None,
-            "safe_area": self._safe_polygon.area if self._safe_polygon else None,
-            "movement_axis": self._movement_axis,
-            "coverage_axis": self._coverage_axis,
-        }
+    def get_original_polygon(self) -> Polygon:  # Return original polygon in the form of Shapely Polygon
+        return self._raw_polygon
 
-    def get_original_polygon_xy(self):
+    def get_original_polygon_xy(self):          # Return original polygon coordinates
         if self._raw_polygon is None:
             return None
         return list(self._raw_polygon.exterior.coords)
 
-    def get_safe_polygon_xy(self):
+    def get_safe_polygon(self) -> Polygon:      # Return safe polygon in the form of Shapely Polygon
+        return self._safe_polygon
+
+    def get_safe_polygon_xy(self):              # Return # Return original polygon coordinates polygon coordinates
         if self._safe_polygon is None:
             return None
         return list(self._safe_polygon.exterior.coords)
+
+    def get_movement_axis(self) -> str:
+        """
+        Returns:
+            "horizontal" or "vertical"
+        """
+        return self._movement_axis
+
+    def get_coverage_axis(self) -> str:
+        """
+        Returns:
+            "horizontal" or "vertical"
+        """
+        return self._coverage_axis
 
     def get_centroid(self):
         return self._centroid
@@ -202,12 +176,6 @@ class AreaHandler:
     def get_movement_vector(self):
         """Returns normalized perpendicular vector pointing toward longest side"""
         return self._movement_vector
-
-    def get_longest_edge(self):
-        return self._longest_edge
-
-    def get_longest_edge_midpoint(self):
-        return self._longest_edge_midpoint
     
     def get_lane_direction_vector(self):
         """
@@ -215,3 +183,15 @@ class AreaHandler:
         Lanes are perpendicular to the longest side → vector = perpendicular to longest edge
         """
         return self._movement_vector  # already perpendicular to longest edge
+
+    # -------------------------
+    # Debug helpers (optional)
+    # -------------------------
+    def debug_summary(self) -> dict:
+        return {
+            "raw_area": self._raw_polygon.area if self._raw_polygon else None,
+            "safe_area": self._safe_polygon.area if self._safe_polygon else None,
+            "movement_axis": self._movement_axis,
+            "coverage_axis": self._coverage_axis,
+        }
+    

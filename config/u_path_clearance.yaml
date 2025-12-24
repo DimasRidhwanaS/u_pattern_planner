@@ -1,0 +1,15 @@
+u_path_clearance:
+  published_point_topic : /published_point
+  costmap_topic         : /move_base/global_costmap/costmap
+  goal_topic            : /move_base_simple/goal
+  frame_id              : map
+
+  mode: rviz
+  robot_radius      : 0.3     # in meters
+  safety_margin     : 0.5    # in meters
+  cost_threshold    : 50      # costmap threshold to consider as obstacle
+  publish_rate      : 1.0     # in Hz
+
+  # If using python
+  grid_size        : 10     # in meters
+  grid_resolution  : 0.1     # in meters

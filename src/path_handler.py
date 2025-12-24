@@ -26,21 +26,13 @@ class PathHandler:
         self._lane_callback = lane_callback
         self._step_callback = step_callback
 
-        # Step 7 arrays
         self.start_heading: List[Pose2D] = []
         self.goal_assembly_point: List[Pose2D] = []
         self.lane_heading: List[Pose2D] = []
 
         self._generate_lanes()
-        # self._generate_point_sequencing()
         self._generate_pose_sequences()
 
-    def get_lanes(self) -> List[List[Point2D]]:
-        return self._lanes
-
-    # -------------------------
-    # Step 5: Lane generation
-    # -------------------------
     def _generate_lanes(self):
         # Compute polygon bounds to estimate number of lanes
         minx, miny, maxx, maxy = self._poly.bounds
@@ -133,7 +125,6 @@ class PathHandler:
 
             self.lane_heading.append((*start, yaw_lane))
 
-
     def _extract_lane(self, geom, reverse=False):
         if geom.is_empty:
             return
@@ -159,48 +150,7 @@ class PathHandler:
                 self._lane_callback(lane)
 
     # -------------------------
-    # Step 7: Pose sequencing
+    # Getters
     # -------------------------
-    def _generate_point_sequencing(self):
-        """
-        For each lane:
-        1. start_heading -> goal_assembly_point
-        2. move backward to start_heading
-        3. rotate to lane_heading
-        """
-        num_lanes = len(self._lanes)
-        for i, lane in enumerate(self._lanes):
-            if len(lane) < 2:
-                continue
-            start = lane[0]
-            end = lane[-1]
-
-            # Yaw towards the longest side (forward/backward)
-            dx, dy = self._lane_dir
-            yaw_longest = math.atan2(dy, dx)
-
-            # STEP 1: start_heading (forward) → goal_assembly_point
-            self.start_heading.append((start[0], start[1], yaw_longest))
-            self.goal_assembly_point.append((end[0], end[1], yaw_longest))
-
-            # STEP 2: backward → same start_heading
-            self.start_heading.append((start[0], start[1], yaw_longest))
-            self.goal_assembly_point.append((end[0], end[1], yaw_longest))  # optional if needed
-
-            # STEP 3: rotate at start → lane_heading
-            if i + 1 < num_lanes:
-                next_start = self._lanes[i+1][0]
-                yaw_lane = math.atan2(next_start[1]-start[1], next_start[0]-start[0])
-            else:
-                yaw_lane = yaw_longest
-            self.lane_heading.append((start[0], start[1], yaw_lane))
-
-            # optional callback for visualization
-            if self._step_callback:
-                # forward
-                self._step_callback((start[0], start[1], yaw_longest), "start_heading")
-                self._step_callback((end[0], end[1], yaw_longest), "goal_assembly_point")
-                # backward
-                self._step_callback((start[0], start[1], yaw_longest), "start_heading")
-                # rotate
-                self._step_callback((start[0], start[1], yaw_lane), "lane_heading")
+    def get_lanes(self) -> List[List[Point2D]]:
+        return self._lanes

@@ -1,0 +1,21 @@
+<launch>
+    <arg name="use_rviz" default="true"/>
+    <arg name="rviz_config" default="$(find u_path_clearance)/rviz/u_path_clearance.rviz"/>
+
+    <rosparam file="$(find u_path_clearance)/config/u_path_clearance.yaml" command="load"/>
+
+    <node
+        pkg="u_path_clearance"
+        type="u_path_clearance.py"
+        name="u_path_clearance"
+        output="screen"
+        required="true">
+    </node>
+
+    <node if="$(arg use_rviz)"
+          pkg="rviz"
+          type="rviz"
+          name="rviz"
+          args="-d $(arg rviz_config)"
+          output="screen"/>
+</launch>
