@@ -404,88 +404,130 @@ class RVIZVisualizer(Visualizer):
         self.frame_id = frame_id
         self._lock = threading.Lock()   
         self.clicked_points = []  
+        self.compute = compute
 
         # Publishers
         self.poly_pub = rospy.Publisher("~area_markers", Marker, queue_size=10)
         self.lane_pub = rospy.Publisher("~lane_markers", MarkerArray, queue_size=10)
         self.step_pub = rospy.Publisher("~step_markers", MarkerArray, queue_size=10)
+        self.point_pub = rospy.Publisher("~clicked_points",MarkerArray,queue_size=10)
 
         rospy.Subscriber(point_topic, PointStamped, self._point_callback)
-        rospy.loginfo("[RVizVisualizer] Initialized")
 
-        if compute:
-            self._compute_points()
-        rospy.loginfo("[RVizVisualizerAPI] Initialized")
+        # Service to trigger computation
+        self.compute_srv = rospy.Service(
+            "~compute_area", Trigger, self._compute_service_callback
+        )
+
+        self.clear_srv = rospy.Service(
+            "~clear_rviz", Trigger, self._clear_rviz_service_callback
+        )
+
+        rospy.loginfo("[RVizVisualizer] Initialized")
 
     # Internal Methods
     def _point_callback(self, msg: PointStamped):
         with self._lock:
             self.clicked_points.append((msg.point.x, msg.point.y))
-            rospy.loginfo(f"[RVizVisualizer] Point received ({len(self.clicked_points)})")
+            rospy.loginfo(f"[RVizVisualizer] Point received ({len(self.clicked_points)}) : ({msg.point.x:.1f}, {msg.point.y:.1f})")
 
-    # def _compute_points(self, event=None):
-    #     with self._lock:
-    #         if not self.clicked_points:
-    #             rospy.logwarn("[RVizVisualizer] No points received yet")
-    #             return
+        # Publish a blue sphere marker for this point
+        marker = Marker()
+        marker.header.frame_id = self.frame_id
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "clicked_points"
+        marker.id = len(self.clicked_points)  # unique ID
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = msg.point.x
+        marker.pose.position.y = msg.point.y
+        marker.pose.position.z = 0.0
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.3  # sphere diameter
+        marker.scale.y = 0.3
+        marker.scale.z = 0.3
+        marker.color.r = 1.0
+        marker.color.g = 0.0
+        marker.color.b = 0.0
+        marker.color.a = 1.0
 
-    #         # ---------- Area ----------
-    #         area = AreaHandler(boundary_points=self.clicked_points, safety_margin=0.5)
+        # Publish immediately
+        self.poly_pub.publish(marker)
 
-    #         original_poly_coords = area.get_original_polygon_xy()
-    #         safe_poly_coords = area.get_safe_polygon_xy()
-
-    #         # Publish polygon
-    #         if original_poly_coords:
-    #             self.display_polygon(original_poly_coords, ns="original", color=(0,0,1,0.3))
-    #         if safe_poly_coords:
-    #             self.display_polygon(safe_poly_coords, ns="safe", color=(0,1,0,0.3))
-
-    #         # ---------- Lanes ----------
-    #         path_handler = PathHandler(
-    #             safe_polygon=area.get_safe_polygon(),
-    #             lane_direction=area.get_lane_direction_vector(),
-    #             lane_spacing=1.0
-    #         )
-    #         lanes = path_handler.get_lanes()
-    #         self.display_lanes(lanes)
-
-    #         # ---------- Step Arrows ----------
-    #         self.display_targets(
-    #             start_heading=path_handler.start_heading,
-    #             goal_assembly_point=path_handler.goal_assembly_point,
-    #             lane_heading=path_handler.lane_heading
-    #         )
-
-    def _compute_points(self):
-        # wait until at least one point arrives
-        while not rospy.is_shutdown():
-            with self._lock:
-                if self.clicked_points:
-                    break
-            rospy.logwarn_throttle(5, "[RVIZVisualizer] No points received yet, waiting...")
-            time.sleep(0.1)
-
-        # now do computation safely
+    def _compute_service_callback(self, req: Trigger):
         with self._lock:
+            if not self.clicked_points:
+                rospy.logwarn("[RVizVisualizer] No points received yet, cannot compute")
+                return TriggerResponse(success=False, message="No points received")
+
             points_copy = self.clicked_points.copy()
 
-        # --- compute area & path ---
-        area = AreaHandler(boundary_points=points_copy, safety_margin=0.5)
-        safe_poly_coords = area.get_safe_polygon_xy()
 
-        path_handler = PathHandler(
-            safe_polygon=area.get_safe_polygon(),
-            lane_direction=area.get_lane_direction_vector(),
-            lane_spacing=1.0
+        if self.compute:
+            # --- Compute area & path ---
+            area = AreaHandler(boundary_points=points_copy, safety_margin=0.2)
+            safe_poly_coords = area.get_safe_polygon_xy()
+
+            path_handler = PathHandler(
+                safe_polygon=area.get_safe_polygon(),
+                lane_direction=area.get_lane_direction_vector(),
+                lane_spacing=0.3
+            )
+
+            # --- Publish to RVIZ ---
+            self.display_polygon(safe_poly_coords)
+            self.display_lanes(path_handler.get_lanes())
+            self.display_targets(
+                path_handler.start_heading,
+                path_handler.goal_assembly_point,
+                path_handler.lane_heading
+            )
+
+        rospy.loginfo("[RVizVisualizer] Computation and publishing complete")
+        return TriggerResponse(success=True, message="Area and path published")
+
+    def _clear_rviz_service_callback(self, req):
+        rospy.loginfo("[RVizVisualizer] Clearing RViz markers and points")
+
+        with self._lock:
+            self.clicked_points.clear()
+
+        # --- Clear polygon ---
+        poly_marker = Marker()
+        poly_marker.header.frame_id = self.frame_id
+        poly_marker.action = Marker.DELETEALL
+        self.poly_pub.publish(poly_marker)
+
+        # --- Clear lanes ---
+        lane_array = MarkerArray()
+        lane_array.markers.append(self._make_delete_all_marker("lanes"))
+        self.lane_pub.publish(lane_array)
+
+        # --- Clear steps (arrows) ---
+        step_array = MarkerArray()
+        step_array.markers.append(self._make_delete_all_marker("start_heading"))
+        step_array.markers.append(self._make_delete_all_marker("goal_assembly_point"))
+        step_array.markers.append(self._make_delete_all_marker("lane_heading"))
+        self.step_pub.publish(step_array)
+
+        # --- Clear clicked points (blue dots) ---
+        point_array = MarkerArray()
+        point_array.markers.append(self._make_delete_all_marker("clicked_points"))
+        self.point_pub.publish(point_array)
+
+        return TriggerResponse(
+            success=True,
+            message="RViz cleared"
         )
 
-        # publish to RVIZ
-        self.display_polygon(safe_poly_coords)
-        self.display_lanes(path_handler.get_lanes())
-        self.display_targets(path_handler.start_heading,
-                             path_handler.goal_assembly_point,
-                             path_handler.lane_heading)
+    # Helper
+    def _make_delete_all_marker(self, ns):
+        m = Marker()
+        m.header.frame_id = self.frame_id
+        m.header.stamp = rospy.Time.now()
+        m.ns = ns
+        m.action = Marker.DELETEALL
+        return m
 
     # Public API
     def display_polygon(self, polygon_coords, ns="safe_polygon", color=(0,1,0,0.3), scale=0.05):
@@ -581,8 +623,11 @@ class RVIZVisualizer(Visualizer):
 
 if __name__ == "__main__":
     rospy.init_node("u_path_clearance")
-    mode = VisualizerMode.PYTHON
+    mode = VisualizerMode.RVIZ
+
     if mode == VisualizerMode.PYTHON:
         viz = PythonVisualizer(grid_size=10, grid_resolution=1.0, safety_margin=0.5)
     elif mode == VisualizerMode.RVIZ:
-        viz = RVIZVisualizer(frame_id="map", point_topic="/published_point", compute=True)
+        viz = RVIZVisualizer(frame_id="map", point_topic="/clicked_point", compute=True)
+
+    rospy.spin()
