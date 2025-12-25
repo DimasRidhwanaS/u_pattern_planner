@@ -9,6 +9,7 @@ from shapely.ops import unary_union
 from geometry_msgs.msg import PointStamped, PoseStamped
 from nav_msgs.msg import OccupancyGrid
 from std_srvs.srv import Trigger, TriggerResponse
+from actionlib_msgs.msg import GoalStatusArray
 
 from area_handler import AreaHandler
 from path_handler import PathHandler
@@ -38,10 +39,15 @@ class UPathClearanceNode:
         self._costmap: OccupancyGrid = None
         self._lock = threading.Lock()
 
-        # Subscribers
+        # Subscribers and Publishers
         rospy.Subscriber(self.published_point_topic,PointStamped,self._point_callback,queue_size=10,)
         rospy.Subscriber(self.costmap_topic,OccupancyGrid,self._costmap_callback,queue_size=1,)
-        rospy.Subscriber(self.goal_topic,PoseStamped,self._goal_callback,queue_size=1,)
+        rospy.Subscriber("/move_base/status", GoalStatusArray, self._status_callback)
+        
+        self.goal_pub = rospy.Publisher(self.goal_topic, PoseStamped, queue_size=1)
+        self._sequence_thread = None
+        self._stop_sequence = False
+        self._current_goal_reached = True  # Start ready for first goal
 
         # Services
         self._process_srv = rospy.Service("~process_area",Trigger,self._process_service_cb,)
@@ -60,9 +66,95 @@ class UPathClearanceNode:
         with self._lock:
             self._costmap = msg
 
+    def _status_callback(self, msg: GoalStatusArray):
+        if not msg.status_list:
+            return
+        last_status = msg.status_list[-1]
+        self._current_goal_reached = last_status.status == 3 # Status 3 means SUCCEEDED
+
     def _goal_callback(self, msg: PoseStamped):
-        # Reserved for future use (alignment / direction bias)
-        pass
+        with self._lock:
+            if len(self._boundary_points) < 4:
+                rospy.logwarn("[UPathClearance] Not enough points to compute path (min 4)")
+                return
+
+            try:
+                # Step 1: Compute Area
+                area_handler = AreaHandler(
+                    boundary_points=self._boundary_points,
+                    safety_margin=self.safety_margin
+                )
+
+                safe_poly = area_handler.get_safe_polygon()
+                if safe_poly.is_empty:
+                    rospy.logwarn("[UPathClearance] Safe polygon empty")
+                    return
+
+                # Step 2: Generate Path
+                path_handler = PathHandler(
+                    safe_polygon=safe_poly,
+                    lane_direction=area_handler.get_lane_direction_vector(),
+                    lane_spacing=self.lane_spacing
+                )
+
+                # Step 3: Arrange the sequence
+                sequence = []
+                num_lanes = len(path_handler.start_heading)
+
+                for i in range(num_lanes):
+                    sequence.append(("start_heading", path_handler.start_heading[i]))
+                    sequence.append(("goal_assembly_point", path_handler.goal_assembly_point[i]))
+                    sequence.append(("start_heading", path_handler.start_heading[i]))
+                    sequence.append(("lane_heading", path_handler.lane_heading[i]))
+
+                # Start sequence thread
+                if self._sequence_thread is None or not self._sequence_thread.is_alive():
+                    self._stop_sequence = False
+                    self._sequence_thread = threading.Thread(
+                        target=self._execute_sequence, args=(sequence,)
+                    )
+                    self._sequence_thread.start()
+                else:
+                    rospy.logwarn("[UPathClearance] Sequence already running")
+
+            except Exception as e:
+                rospy.logerr(f"[UPathClearance] Failed to compute path from goal: {e}")
+                return
+
+    def _execute_sequence(self, sequence):
+        rospy.loginfo("[UPathClearance] Executing goal sequence")
+        for kind, pose in sequence:
+            if self._stop_sequence or rospy.is_shutdown():
+                rospy.logwarn("[UPathClearance] Sequence terminated!")
+                return
+
+            # Wait for previous goal to be reached
+            while not self._current_goal_reached:
+                if self._stop_sequence or rospy.is_shutdown():
+                    rospy.logwarn("[UPathClearance] Sequence terminated!")
+                    return
+                rospy.sleep(0.1)
+
+            # Publish next goal
+            x, y, yaw = pose
+            goal_msg = PoseStamped()
+            goal_msg.header.frame_id = self.frame_id
+            goal_msg.header.stamp = rospy.Time.now()
+            goal_msg.pose.position.x = x
+            goal_msg.pose.position.y = y
+            goal_msg.pose.position.z = 0
+            goal_msg.pose.orientation = self._yaw_to_quaternion(yaw)
+            self.goal_pub.publish(goal_msg)
+            rospy.loginfo(f"[UPathClearance] Published {kind} -> ({x:.2f},{y:.2f},{yaw:.2f})")
+
+            # Reset goal reached flag
+            self._current_goal_reached = False
+
+    def _yaw_to_quaternion(self, yaw: float):
+        from tf.transformations import quaternion_from_euler
+        q = quaternion_from_euler(0, 0, yaw)
+        from geometry_msgs.msg import Quaternion
+        return Quaternion(*q)
 
     # Service Logic
     def _process_service_cb(self, req: Trigger.Request) -> TriggerResponse:
@@ -192,11 +284,19 @@ class UPathClearanceNode:
 
         return safe_poly
 
+    # Loop Handler
     def spin(self):
         rate = rospy.Rate(self.publish_rate)
         while not rospy.is_shutdown():
             rate.sleep()
 
+    def shutdown_hook(self):
+        rospy.logwarn("[UPathClearance] Shutting down, stopping robot!")
+        self._stop_sequence = True
+        if self._sequence_thread and self._sequence_thread.is_alive():
+            self._sequence_thread.join()
+        # Optional: send current position as stop goal
+        rospy.loginfo("[UPathClearance] Robot sequence stopped")
 
 if __name__ == "__main__":
     node = UPathClearanceNode()

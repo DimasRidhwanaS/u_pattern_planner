@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
 
+"""
+visualizer.py
+
+Main executable node.
+Acts as frontend + orchestrator for area_handler and path_handler.
+
+Currently implemented:
+- Python visualization
+- Click points to define area
+- Compute -> area_handler (Step 1-4)
+- Visualize original & safe polygon
+"""
+
+import matplotlib.pyplot as plt
 import numpy as np
 import math
-import threading
-import traceback
-import matplotlib.pyplot as plt
+# import rospy
+from typing import List, Tuple, Callable
 from matplotlib.widgets import Button
-from typing import List, Tuple
-import time
+# from visualization_msgs.msg import Marker, MarkerArray
+# from geometry_msgs.msg import Point
+# from std_msgs.msg import ColorRGBA
 
-import rospy
-from std_srvs.srv import Trigger, TriggerResponse
-from geometry_msgs.msg import Point, PoseStamped, PointStamped
-from nav_msgs.msg import OccupancyGrid
-from visualization_msgs.msg import Marker, MarkerArray
-from std_msgs.msg import ColorRGBA
 
 from area_handler import AreaHandler
 from path_handler import PathHandler
@@ -23,6 +31,9 @@ class VisualizerMode:
     PYTHON = "python"
     RVIZ = "rviz"
 
+# -----------------------------
+# Visualizer Class
+# -----------------------------
 class Visualizer:
     def __init__(
         self,
@@ -31,6 +42,12 @@ class Visualizer:
         grid_resolution: float = 1.0,
         safety_margin: float = 0.5
     ):
+        """
+        :param mode: 'python' or 'rviz'
+        :param grid_size: half-size of grid
+        :param grid_resolution: spacing between grid lines
+        :param safety_margin: inward offset for safe polygon
+        """
         self.mode = mode
         self.grid_size = grid_size
         self.grid_resolution = grid_resolution
@@ -54,8 +71,9 @@ class Visualizer:
         else:
             raise ValueError("Unknown visualizer mode")
 
-
-class PythonVisualizer(Visualizer):
+    # -----------------------------
+    # Python Visualization
+    # -----------------------------
     def _init_python_visualizer(self):
         self.fig, self.ax = plt.subplots()
         self.fig.canvas.manager.set_window_title("Coverage Planner Visualizer")
@@ -120,6 +138,14 @@ class PythonVisualizer(Visualizer):
     def _on_compute_pressed(self, event):
         print("[Visualizer] Compute pressed")
 
+        if self.mode == VisualizerMode.RVIZ:
+            area = AreaHandler(
+                boundary_points=self.clicked_points,
+                safety_margin=self.safety_margin
+            )
+            self._publish_area_rviz(area)
+            return
+        
         # Visualizing Area
         area = AreaHandler(
             boundary_points=self.clicked_points,
@@ -393,196 +419,98 @@ class PythonVisualizer(Visualizer):
         self.fig.canvas.mpl_connect("key_press_event", lambda event: next_step() if event.key == " " else None)
         print("[Visualizer] Press SPACE to show next goal point")
 
+    # -----------------------------
+    # RViz (stub)
+    # -----------------------------
+    # def _init_rviz_visualizer(self):
+    #     rospy.init_node("coverage_visualizer", anonymous=True)
 
-class RVIZVisualizer(Visualizer):
-    def __init__(
-        self, 
-        frame_id="map",
-        point_topic="/published_point",
-        compute=False
-    ):
-        self.frame_id = frame_id
-        self._lock = threading.Lock()   
-        self.clicked_points = []  
+    #     self.marker_pub = rospy.Publisher(
+    #         "/coverage_visualization",
+    #         MarkerArray,
+    #         queue_size=1,
+    #         latch=True
+    #     )
 
-        # Publishers
-        self.poly_pub = rospy.Publisher("~area_markers", Marker, queue_size=10)
-        self.lane_pub = rospy.Publisher("~lane_markers", MarkerArray, queue_size=10)
-        self.step_pub = rospy.Publisher("~step_markers", MarkerArray, queue_size=10)
+    #     rospy.loginfo("[Visualizer] RViz mode initialized")
+    #     rospy.spin()
 
-        rospy.Subscriber(point_topic, PointStamped, self._point_callback)
-        rospy.loginfo("[RVizVisualizer] Initialized")
+    def _make_color(self, r, g, b, a=1.0):
+        return ColorRGBA(r, g, b, a)
 
-        if compute:
-            self._compute_points()
-        rospy.loginfo("[RVizVisualizerAPI] Initialized")
+    def _make_point(self, x, y, z=0.0):
+        p = Point()
+        p.x = x
+        p.y = y
+        p.z = z
+        return p
 
-    # Internal Methods
-    def _point_callback(self, msg: PointStamped):
-        with self._lock:
-            self.clicked_points.append((msg.point.x, msg.point.y))
-            rospy.loginfo(f"[RVizVisualizer] Point received ({len(self.clicked_points)})")
+    def _publish_area_rviz(self, area: AreaHandler):
+        markers = MarkerArray()
+        mid = 0
 
-    # def _compute_points(self, event=None):
-    #     with self._lock:
-    #         if not self.clicked_points:
-    #             rospy.logwarn("[RVizVisualizer] No points received yet")
-    #             return
+        # Original polygon
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = rospy.Time.now()
+        m.ns = "original_polygon"
+        m.id = mid; mid += 1
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = 0.05
+        m.color = self._make_color(0, 0, 1)
 
-    #         # ---------- Area ----------
-    #         area = AreaHandler(boundary_points=self.clicked_points, safety_margin=0.5)
+        for x, y in area.get_original_polygon_xy():
+            m.points.append(self._make_point(x, y))
 
-    #         original_poly_coords = area.get_original_polygon_xy()
-    #         safe_poly_coords = area.get_safe_polygon_xy()
+        markers.markers.append(m)
 
-    #         # Publish polygon
-    #         if original_poly_coords:
-    #             self.display_polygon(original_poly_coords, ns="original", color=(0,0,1,0.3))
-    #         if safe_poly_coords:
-    #             self.display_polygon(safe_poly_coords, ns="safe", color=(0,1,0,0.3))
+        # Safe polygon
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = rospy.Time.now()
+        m.ns = "safe_polygon"
+        m.id = mid; mid += 1
+        m.type = Marker.LINE_STRIP
+        m.action = Marker.ADD
+        m.scale.x = 0.05
+        m.color = self._make_color(0, 1, 0)
 
-    #         # ---------- Lanes ----------
-    #         path_handler = PathHandler(
-    #             safe_polygon=area.get_safe_polygon(),
-    #             lane_direction=area.get_lane_direction_vector(),
-    #             lane_spacing=1.0
-    #         )
-    #         lanes = path_handler.get_lanes()
-    #         self.display_lanes(lanes)
+        for x, y in area.get_safe_polygon_xy():
+            m.points.append(self._make_point(x, y))
 
-    #         # ---------- Step Arrows ----------
-    #         self.display_targets(
-    #             start_heading=path_handler.start_heading,
-    #             goal_assembly_point=path_handler.goal_assembly_point,
-    #             lane_heading=path_handler.lane_heading
-    #         )
+        markers.markers.append(m)
 
-    def _compute_points(self):
-        # wait until at least one point arrives
-        while not rospy.is_shutdown():
-            with self._lock:
-                if self.clicked_points:
-                    break
-            rospy.logwarn_throttle(5, "[RVIZVisualizer] No points received yet, waiting...")
-            time.sleep(0.1)
+        # Movement arrow
+        cx, cy = area.get_centroid()
+        nx, ny = area.get_movement_vector()
 
-        # now do computation safely
-        with self._lock:
-            points_copy = self.clicked_points.copy()
+        m = Marker()
+        m.header.frame_id = "map"
+        m.header.stamp = rospy.Time.now()
+        m.ns = "movement_direction"
+        m.id = mid; mid += 1
+        m.type = Marker.ARROW
+        m.action = Marker.ADD
+        m.scale.x = 1.0   # length
+        m.scale.y = 0.15
+        m.scale.z = 0.15
+        m.color = self._make_color(1, 0, 0)
 
-        # --- compute area & path ---
-        area = AreaHandler(boundary_points=points_copy, safety_margin=0.5)
-        safe_poly_coords = area.get_safe_polygon_xy()
+        m.points.append(self._make_point(cx, cy))
+        m.points.append(self._make_point(cx + nx, cy + ny))
 
-        path_handler = PathHandler(
-            safe_polygon=area.get_safe_polygon(),
-            lane_direction=area.get_lane_direction_vector(),
-            lane_spacing=1.0
-        )
+        markers.markers.append(m)
 
-        # publish to RVIZ
-        self.display_polygon(safe_poly_coords)
-        self.display_lanes(path_handler.get_lanes())
-        self.display_targets(path_handler.start_heading,
-                             path_handler.goal_assembly_point,
-                             path_handler.lane_heading)
+        self.marker_pub.publish(markers)
 
-    # Public API
-    def display_polygon(self, polygon_coords, ns="safe_polygon", color=(0,1,0,0.3), scale=0.05):
-        """
-        polygon_coords: list of (x, y)
-        """
-        if not polygon_coords:
-            return
 
-        marker = Marker()
-        marker.header.frame_id = self.frame_id
-        marker.header.stamp = rospy.Time.now()
-        marker.ns = ns
-        marker.id = 0
-        marker.type = Marker.LINE_STRIP
-        marker.action = Marker.ADD
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = scale
-        marker.color.r, marker.color.g, marker.color.b, marker.color.a = color
-
-        # Add points to marker
-        for x, y in polygon_coords:
-            pt = Point()
-            pt.x, pt.y, pt.z = x, y, 0.0
-            marker.points.append(pt)
-
-        # Close polygon
-        pt = Point()
-        pt.x, pt.y, pt.z = polygon_coords[0][0], polygon_coords[0][1], 0.0
-        marker.points.append(pt)
-
-        self.poly_pub.publish(marker)
-
-    def display_lanes(self, lanes_coords):
-        marker_array = MarkerArray()
-        for i, lane in enumerate(lanes_coords):
-            if not lane:
-                continue
-            marker = Marker()
-            marker.header.frame_id = self.frame_id
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = "lanes"
-            marker.id = i
-            marker.type = Marker.LINE_STRIP
-            marker.action = Marker.ADD
-            marker.pose.orientation.w = 1.0
-            marker.scale.x = 0.03
-            marker.color.r, marker.color.g, marker.color.b, marker.color.a = 1.0, 0.0, 0.0, 1.0
-
-            for x, y in lane:
-                pt = Point()
-                pt.x, pt.y, pt.z = x, y, 0.0
-                marker.points.append(pt)
-
-            marker_array.markers.append(marker)
-        self.lane_pub.publish(marker_array)
-
-    def display_targets(self, start_heading, goal_assembly_point, lane_heading):
-        marker_array = MarkerArray()
-
-        def add_arrow(pos_yaw, kind, idx):
-            x, y, yaw = pos_yaw
-            marker = Marker()
-            marker.header.frame_id = self.frame_id
-            marker.header.stamp = rospy.Time.now()
-            marker.ns = kind
-            marker.id = idx
-            marker.type = Marker.ARROW
-            marker.action = Marker.ADD
-            marker.pose.position.x, marker.pose.position.y, marker.pose.position.z = x, y, 0.0
-            marker.pose.orientation.x = 0.0
-            marker.pose.orientation.y = 0.0
-            marker.pose.orientation.z = np.sin(yaw/2.0)
-            marker.pose.orientation.w = np.cos(yaw/2.0)
-            marker.scale.x = 0.2  # length
-            marker.scale.y = 0.05
-            marker.scale.z = 0.05
-            if kind=="start_heading":
-                marker.color = ColorRGBA(0,0,1,1)
-            elif kind=="goal_assembly_point":
-                marker.color = ColorRGBA(0,1,0,1)
-            else:
-                marker.color = ColorRGBA(1,0,0,1)
-            marker_array.markers.append(marker)
-
-        for idx in range(len(start_heading)):
-            add_arrow(start_heading[idx], "start_heading", idx*3)
-            add_arrow(goal_assembly_point[idx], "goal_assembly_point", idx*3+1)
-            add_arrow(lane_heading[idx], "lane_heading", idx*3+2)
-
-        self.step_pub.publish(marker_array)
 
 
 if __name__ == "__main__":
-    rospy.init_node("u_path_clearance")
-    mode = VisualizerMode.PYTHON
-    if mode == VisualizerMode.PYTHON:
-        viz = PythonVisualizer(grid_size=10, grid_resolution=1.0, safety_margin=0.5)
-    elif mode == VisualizerMode.RVIZ:
-        viz = RVIZVisualizer(frame_id="map", point_topic="/published_point", compute=True)
+    Visualizer(
+        mode=VisualizerMode.PYTHON,
+        grid_size=10,
+        grid_resolution=1.0,
+        safety_margin=0.5
+    )
